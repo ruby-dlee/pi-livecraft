@@ -227,7 +227,8 @@ async function launchFirstmate(): Promise<SessionSummary> {
   const operation = (async (): Promise<SessionSummary> => {
     const preset = firstmatePreset()
     await validateFirstmatePreset(preset)
-    const recent = (await listRecentPiSessions(preset.workspace, preset.sessionDirectory))[0]
+    const workspace = await realpath(preset.workspace)
+    const recent = (await listRecentPiSessions(workspace, preset.sessionDirectory))[0]
     if (recent) {
       const managedOwner = [...sessions.values()].find((session) =>
         session.summary.sessionPath === recent.sessionPath && session.summary.status !== 'exited'
@@ -238,19 +239,19 @@ async function launchFirstmate(): Promise<SessionSummary> {
           'Firstmate is already open in another Pi process. Quit it, then try again.',
         )
       }
-      const managedPids = new Set(
-        [...sessions.values()].flatMap(({ pi }) => pi.child.pid ? [pi.child.pid] : []),
+    }
+    const managedPids = new Set(
+      [...sessions.values()].flatMap(({ pi }) => pi.child.pid ? [pi.child.pid] : []),
+    )
+    if (await externalPiSessionOwner(recent?.sessionPath, workspace, managedPids)) {
+      throw new Error(
+        'Firstmate is already open in another Pi process. Quit it, then try again.',
       )
-      if (await externalPiSessionOwner(recent.sessionPath, managedPids)) {
-        throw new Error(
-          'Firstmate is already open in another Pi process. Quit it, then try again.',
-        )
-      }
     }
 
     const summary: SessionSummary = {
       id: randomUUID(),
-      cwd: preset.workspace,
+      cwd: workspace,
       name: recent?.name ?? 'Firstmate',
       sessionPath: recent?.sessionPath,
       status: 'starting',

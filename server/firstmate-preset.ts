@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
-import { stat } from 'node:fs/promises'
-import { isAbsolute, join } from 'node:path'
+import { realpath, stat } from 'node:fs/promises'
+import { basename, isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -18,7 +18,7 @@ export interface FirstmatePreset {
 
 const defaults = {
   workspace: '/Users/dongkeun/firstmate',
-  fmHome: '/mnt/task/.fm-return',
+  fmHome: '/Users/dongkeun/firstmate-home',
   agentDirectory: '/Users/dongkeun/.pi/firstmate-local',
   extensions: [
     '/Users/dongkeun/firstmate/.pi/extensions/fm-primary-turnend-guard.ts',
@@ -70,22 +70,28 @@ async function requirePath(
   }
 }
 
-/** Detects a process whose argv explicitly opens the same persisted Pi session. */
+/** Detects an unmanaged process that explicitly owns the session or implicitly owns the cwd. */
 export async function externalPiSessionOwner(
-  sessionPath: string,
+  sessionPath: string | undefined,
+  workspace: string,
   ignoredPids: ReadonlySet<number> = new Set(),
 ): Promise<number | undefined> {
   if (process.platform === 'win32') return undefined
 
   let stdout: string
+  let canonicalWorkspace: string
   try {
-    const result = await execFileAsync('ps', ['-axo', 'pid=,args='], {
-      encoding: 'utf8',
-      maxBuffer: 4 * 1024 * 1024,
-    })
+    const [result, resolvedWorkspace] = await Promise.all([
+      execFileAsync('ps', ['-axo', 'pid=,args='], {
+        encoding: 'utf8',
+        maxBuffer: 4 * 1024 * 1024,
+      }),
+      realpath(workspace),
+    ])
     stdout = result.stdout
+    canonicalWorkspace = resolvedWorkspace
   } catch {
-    throw new Error('Could not verify whether Firstmate is already open in another Pi process')
+    throw verificationError()
   }
 
   for (const line of stdout.split('\n')) {
@@ -93,7 +99,10 @@ export async function externalPiSessionOwner(
     if (!match) continue
     const pid = Number(match[1])
     if (!Number.isSafeInteger(pid) || ignoredPids.has(pid)) continue
-    if (commandOwnsPiSession(match[2], sessionPath)) return pid
+    if (sessionPath && commandOwnsPiSession(match[2], sessionPath)) return pid
+    if (!commandMayOwnPiWorkspace(match[2])) continue
+    const cwd = await processCwd(pid)
+    if (cwd === canonicalWorkspace) return pid
   }
   return undefined
 }
@@ -105,6 +114,75 @@ export function commandOwnsPiSession(command: string, sessionPath: string): bool
     `(?:^|\\s)(?:--session(?:=|\\s+)|-s\\s+)(?:"${path}"|'${path}'|${path})(?=\\s|$)`,
   )
     .test(command)
+}
+
+/** Treats bare and continue-mode Pi invocations as implicit owners of their cwd. */
+export function commandMayOwnPiWorkspace(command: string): boolean {
+  const argumentsAfterEntrypoint = piArguments(command)
+  if (!argumentsAfterEntrypoint) return false
+  if (
+    argumentsAfterEntrypoint.some((argument) =>
+      argument === '--session' || argument.startsWith('--session=') || argument === '-s'
+      || argument === '--session-id' || argument.startsWith('--session-id=')
+    )
+  ) return false
+  return argumentsAfterEntrypoint.length === 0
+    || argumentsAfterEntrypoint.includes('-c')
+    || argumentsAfterEntrypoint.includes('--continue')
+}
+
+function piArguments(command: string): string[] | undefined {
+  const tokens = command.match(/(?:"[^"]*"|'[^']*'|\S+)/g)?.map(unquote) ?? []
+  if (tokens.length === 0) return undefined
+  if (isPiEntrypoint(tokens[0])) return tokens.slice(1)
+  if (!['node', 'nodejs'].includes(basename(tokens[0]))) return undefined
+  const entrypoint = tokens.slice(1, 4).findIndex(isPiEntrypoint)
+  return entrypoint < 0 ? undefined : tokens.slice(entrypoint + 2)
+}
+
+function isPiEntrypoint(value: string): boolean {
+  const normalized = value.replaceAll('\\', '/')
+  return basename(normalized) === 'pi'
+    || /(?:^|\/)pi-coding-agent\/.+\/cli(?:\.js)?$/.test(normalized)
+}
+
+function unquote(value: string): string {
+  if (
+    value.length >= 2
+    && ((value.startsWith('"') && value.endsWith('"'))
+      || (value.startsWith('\'') && value.endsWith('\'')))
+  ) return value.slice(1, -1)
+  return value
+}
+
+async function processCwd(pid: number): Promise<string | undefined> {
+  try {
+    if (process.platform === 'linux') return await realpath(`/proc/${pid}/cwd`)
+    if (process.platform !== 'darwin') return undefined
+    const { stdout } = await execFileAsync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024,
+    })
+    const cwd = stdout.split('\n').find((line) => line.startsWith('n'))?.slice(1)
+    if (!cwd) throw new Error('Missing cwd')
+    return await realpath(cwd)
+  } catch {
+    if (!isProcessAlive(pid)) return undefined
+    throw verificationError()
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+function verificationError(): Error {
+  return new Error('Could not verify whether Firstmate is already open in another Pi process')
 }
 
 function escapeRegex(value: string): string {

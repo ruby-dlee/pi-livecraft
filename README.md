@@ -83,7 +83,7 @@ Open [http://127.0.0.1:5173](http://127.0.0.1:5173) and you should see Livecraft
 
 ### Firstmate launch preset
 
-This fork shows **Launch Firstmate** above generic session creation. One click asks the existing manager to focus its matching primary process or safely resume the newest session in `/Users/dongkeun/firstmate`. The checked-in preset uses `FM_HOME=/mnt/task/.fm-return`, `PI_CODING_AGENT_DIR=/Users/dongkeun/.pi/firstmate-local`, and the two primary Firstmate extensions. The browser sends no paths, commands, or executable configuration.
+This fork shows **Launch Firstmate** above generic session creation. One click asks the existing manager to focus its matching primary process or safely resume the newest session in `/Users/dongkeun/firstmate`. The checked-in preset uses `FM_HOME=/Users/dongkeun/firstmate-home`, `PI_CODING_AGENT_DIR=/Users/dongkeun/.pi/firstmate-local`, and the two primary Firstmate extensions. The browser sends no paths, commands, or executable configuration.
 
 Trusted launch wrappers and tests can override only the preset paths with `PI_LIVECRAFT_FIRSTMATE_WORKSPACE`, `PI_LIVECRAFT_FIRSTMATE_HOME`, `PI_LIVECRAFT_FIRSTMATE_AGENT_DIR`, `PI_LIVECRAFT_FIRSTMATE_TURNEND_GUARD`, and `PI_LIVECRAFT_FIRSTMATE_PI_WATCH`. Pi itself is still resolved from the launcher's `PATH`; do not set a version-specific Node or Pi path in frontend code.
 

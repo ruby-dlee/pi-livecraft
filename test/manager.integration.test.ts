@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { spawn } from 'node:child_process'
@@ -395,6 +395,52 @@ test(
       process.execPath,
       ['--eval', 'setInterval(() => {}, 1_000)', '--', '--session', fixture.sessionPath],
       { stdio: 'ignore' },
+    )
+    const client = await connectManager(port)
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      const refused = await client.request('launch_preset', { preset: 'firstmate' })
+      assert.equal(refused.ok, false)
+      assert.equal(
+        refused.error,
+        'Firstmate is already open in another Pi process. Quit it, then try again.',
+      )
+
+      await stopProcess(owner)
+      const resumed = await client.request('launch_preset', { preset: 'firstmate' })
+      assert.equal(resumed.ok, true)
+      assert.equal(isObject(resumed.data) && resumed.data.sessionPath, fixture.sessionPath)
+    } finally {
+      client.close()
+      await stopProcess(owner)
+      await stopProcess(manager)
+      await rm(directory, { force: true, recursive: true })
+    }
+  },
+)
+
+test(
+  'refuses an unmanaged continuing Pi process in the canonical Firstmate workspace',
+  { skip: process.platform === 'win32', timeout: 10_000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'pi-manager-'))
+    const port = 45_000 + (process.pid % 10_000)
+    await writeFakePi(directory)
+    const fixture = await createFirstmateFixture(directory)
+    const manager = spawn(process.execPath, ['server/manager.ts'], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PATH: `${fakePiBin(directory)}${delimiter}${process.env.PATH}`,
+        PI_LIVECRAFT_MANAGER_PORT: String(port),
+        ...fixture.environment,
+      },
+      stdio: 'ignore',
+    })
+    const owner = spawn(
+      process.execPath,
+      ['--eval', 'setInterval(() => {}, 1_000)', '--', '--continue'],
+      { argv0: 'pi', cwd: fixture.workspace, stdio: 'ignore' },
     )
     const client = await connectManager(port)
     try {
@@ -853,9 +899,10 @@ async function createFirstmateFixture(directory: string): Promise<{
   sessionPath: string
   workspace: string
 }> {
-  const workspace = join(directory, 'firstmate')
-  const fmHome = join(directory, 'fm-home')
-  const agentDirectory = join(directory, 'firstmate-profile')
+  const canonicalDirectory = await realpath(directory)
+  const workspace = join(canonicalDirectory, 'firstmate')
+  const fmHome = join(canonicalDirectory, 'fm-home')
+  const agentDirectory = join(canonicalDirectory, 'firstmate-profile')
   const extensionDirectory = join(workspace, '.pi', 'extensions')
   const turnendGuard = join(extensionDirectory, 'fm-primary-turnend-guard.ts')
   const piWatch = join(extensionDirectory, 'fm-primary-pi-watch.ts')

@@ -1,8 +1,14 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { once } from 'node:events'
+import { mkdir, mkdtemp, readFile, rm, symlink } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import {
+  commandMayOwnPiWorkspace,
   commandOwnsPiSession,
+  externalPiSessionOwner,
   FIRSTMATE_PRESET_ID,
   firstmatePreset,
 } from '../server/firstmate-preset.ts'
@@ -11,7 +17,7 @@ test('defines the constrained production Firstmate launch preset', () => {
   assert.deepEqual(firstmatePreset({}), {
     id: FIRSTMATE_PRESET_ID,
     workspace: '/Users/dongkeun/firstmate',
-    fmHome: '/mnt/task/.fm-return',
+    fmHome: '/Users/dongkeun/firstmate-home',
     agentDirectory: '/Users/dongkeun/.pi/firstmate-local',
     sessionDirectory: '/Users/dongkeun/.pi/firstmate-local/sessions',
     extensions: [
@@ -55,6 +61,66 @@ test('recognizes only an explicit persisted-session argument', () => {
     false,
   )
 })
+
+test('recognizes bare and continuing Pi commands as implicit cwd owners', () => {
+  assert.equal(commandMayOwnPiWorkspace('pi'), true)
+  assert.equal(commandMayOwnPiWorkspace('/usr/local/bin/pi -c'), true)
+  assert.equal(commandMayOwnPiWorkspace('node /usr/local/bin/pi --continue'), true)
+  assert.equal(
+    commandMayOwnPiWorkspace(
+      'node /opt/pi-coding-agent/dist/bundle/cli.js --mode rpc --continue',
+    ),
+    true,
+  )
+  assert.equal(commandMayOwnPiWorkspace('pi --session /tmp/other.jsonl'), false)
+  assert.equal(commandMayOwnPiWorkspace('pi --session-id new-session'), false)
+  assert.equal(commandMayOwnPiWorkspace('pi --help'), false)
+  assert.equal(commandMayOwnPiWorkspace('grep pi'), false)
+})
+
+test(
+  'finds an unmanaged bare Pi cwd owner while excluding managed PIDs and unrelated cwd',
+  { skip: process.platform === 'win32', timeout: 10_000 },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'livecraft-firstmate-owner-'))
+    const workspace = join(root, 'workspace')
+    const workspaceAlias = join(root, 'workspace-alias')
+    const unrelatedWorkspace = join(root, 'unrelated')
+    await Promise.all([mkdir(workspace), mkdir(unrelatedWorkspace)])
+    await symlink(workspace, workspaceAlias)
+    const child = spawn('/bin/cat', [], {
+      argv0: 'pi',
+      cwd: workspaceAlias,
+      stdio: ['pipe', 'ignore', 'ignore'],
+    })
+
+    try {
+      await once(child, 'spawn')
+      assert.equal(
+        await externalPiSessionOwner(undefined, workspace),
+        child.pid,
+      )
+      assert.equal(
+        await externalPiSessionOwner(undefined, workspace, new Set([child.pid!])),
+        undefined,
+      )
+      assert.equal(
+        await externalPiSessionOwner(undefined, unrelatedWorkspace),
+        undefined,
+      )
+    } finally {
+      await terminate(child)
+      await rm(root, { recursive: true, force: true })
+    }
+  },
+)
+
+async function terminate(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  const exited = once(child, 'exit')
+  child.kill('SIGTERM')
+  await exited
+}
 
 test('exposes livecraft without removing the pi-livecraft command', async () => {
   const packageJson = JSON.parse(await readFile('package.json', 'utf8')) as {
