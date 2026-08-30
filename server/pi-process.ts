@@ -25,8 +25,12 @@ interface PiProcessOptions {
   systemPrompt?: string
   /** Thinking level for the isolated process (defaults to 'off'). */
   thinkingLevel?: string
-  /** Extension paths to load (omitting passes --no-extensions). */
+  /** Extension paths to load in an isolated process (omitting passes --no-extensions). */
   extensions?: string[]
+  /** Extra extensions appended to Livecraft's required persistent-session extensions. */
+  persistentExtensions?: string[]
+  /** Trusted manager-side environment overrides for a persistent launch preset. */
+  persistentEnvironment?: NodeJS.ProcessEnv
   /** Tool names to load (omitting passes --no-tools). */
   tools?: string[]
   /** Whether Pi loads AGENTS.md/CLAUDE.md from parent directories (default true). */
@@ -72,12 +76,13 @@ export class PiProcess extends EventEmitter {
         fileURLToPath(new URL('../pi-extensions/ask-user-question.ts', import.meta.url)),
         '--extension',
         fileURLToPath(new URL('../pi-extensions/quotas.ts', import.meta.url)),
+        ...(options.persistentExtensions ?? []).flatMap((path) => ['--extension', path]),
         ...(sessionPath ? ['--session', sessionPath] : ['--session-id', sessionId]),
       ]
 
     const env = options.isolated
       ? { ...process.env, PI_CODING_AGENT_DIR: ISOLATED_AGENT_DIR }
-      : process.env
+      : { ...process.env, ...options.persistentEnvironment }
     this.child = spawn(launcher.command, [...launcher.argsPrefix, ...args], {
       cwd,
       env,

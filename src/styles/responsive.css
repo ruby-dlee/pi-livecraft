@@ -139,12 +139,24 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .new-session {
+  .session-launch-actions {
     grid-row: 1;
     grid-column: 2;
     align-self: center;
-    width: auto;
+    flex-direction: row;
     margin-bottom: 0;
+  }
+  .firstmate-launch {
+    width: auto;
+    height: 40px;
+    padding-inline: 11px;
+  }
+  .firstmate-launch small {
+    display: none;
+  }
+  .new-session {
+    width: auto;
+    height: 40px;
     padding-inline: 13px;
   }
   .session-list {
@@ -191,8 +203,23 @@
   .brand small {
     display: none;
   }
+  .session-launch-actions {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+  .firstmate-launch {
+    flex: 1;
+  }
   .new-session {
+    flex: 0 0 auto;
     font-size: 12px;
+  }
+  .workspace-group {
+    grid-row: 3;
+  }
+  .session-list {
+    grid-row: 4;
   }
   .conversation {
     padding: 20px 12px;

@@ -57,10 +57,13 @@ export async function listRecentPiSessions(
 }
 
 /** Verifies that a file belongs to the Pi session directory before loading its metadata. */
-export async function loadPiSession(path: string): Promise<RecentSession> {
+export async function loadPiSession(
+  path: string,
+  directory = sessionDirectory,
+): Promise<RecentSession> {
   const [canonicalPath, canonicalDirectory] = await Promise.all([
     realpath(path),
-    realpath(sessionDirectory),
+    realpath(directory),
   ])
   const relativePath = relative(canonicalDirectory, canonicalPath)
   if (!relativePath || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath))

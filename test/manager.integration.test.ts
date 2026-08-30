@@ -257,6 +257,169 @@ test('deduplicates concurrent opens for one session path', { timeout: 10_000 }, 
 })
 
 test(
+  'launches the exact Firstmate preset once and preserves extension UI responses',
+  { timeout: 10_000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'pi-manager-'))
+    const port = 45_000 + (process.pid % 10_000)
+    await writeFakePi(directory)
+    const fixture = await createFirstmateFixture(directory)
+    const manager = spawn(process.execPath, ['server/manager.ts'], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PATH: `${fakePiBin(directory)}${delimiter}${process.env.PATH}`,
+        PI_LIVECRAFT_MANAGER_PORT: String(port),
+        ...fixture.environment,
+      },
+      stdio: 'ignore',
+    })
+    const client = await connectManager(port)
+    try {
+      const [first, duplicate] = await Promise.all([
+        client.request('launch_preset', { preset: 'firstmate' }),
+        client.request('launch_preset', { preset: 'firstmate' }),
+      ])
+      assert.equal(first.ok, true)
+      assert.equal(duplicate.ok, true)
+      const id = sessionId(first)
+      assert.equal(sessionId(duplicate), id)
+      assert.equal(isObject(first.data) && first.data.cwd, fixture.workspace)
+      assert.equal(isObject(first.data) && first.data.sessionPath, fixture.sessionPath)
+
+      const dialogEvent = client.waitForEvent((event) =>
+        event.event === 'pi' && isObject(event.data) && event.data.id === 'lavish-test'
+      )
+      assert.equal(
+        (await client.request('command', {
+          sessionId: id,
+          command: { type: 'prompt', message: '/lavish' },
+        }))
+          .ok,
+        true,
+      )
+      await dialogEvent
+      assert.ok(
+        sessionPendingUi(await client.request('list', {}), id).some((request) =>
+          isObject(request) && request.id === 'lavish-test' && request.method === 'confirm'
+        ),
+      )
+      assert.equal(
+        (await client.request('command', {
+          sessionId: id,
+          command: { type: 'extension_ui_response', id: 'lavish-test', confirmed: true },
+        }))
+          .ok,
+        true,
+      )
+      assert.equal(
+        sessionPendingUi(await client.request('list', {}), id).some((request) =>
+          isObject(request) && request.id === 'lavish-test'
+        ),
+        false,
+      )
+      assert.equal(
+        sessionId(await client.request('launch_preset', { preset: 'firstmate' })),
+        id,
+      )
+    } finally {
+      client.close()
+      await stopProcess(manager)
+      await rm(directory, { force: true, recursive: true })
+    }
+  },
+)
+
+test(
+  'refuses a Firstmate preset when a generic managed process owns its session',
+  { timeout: 10_000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'pi-manager-'))
+    const port = 45_000 + (process.pid % 10_000)
+    await writeFakePi(directory)
+    const fixture = await createFirstmateFixture(directory)
+    const manager = spawn(process.execPath, ['server/manager.ts'], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PATH: `${fakePiBin(directory)}${delimiter}${process.env.PATH}`,
+        PI_LIVECRAFT_MANAGER_PORT: String(port),
+        ...fixture.environment,
+      },
+      stdio: 'ignore',
+    })
+    const client = await connectManager(port)
+    try {
+      assert.equal(
+        (await client.request('open', {
+          cwd: fixture.workspace,
+          name: 'Generic owner',
+          sessionPath: fixture.sessionPath,
+        }))
+          .ok,
+        true,
+      )
+      const refused = await client.request('launch_preset', { preset: 'firstmate' })
+      assert.equal(refused.ok, false)
+      assert.equal(
+        refused.error,
+        'Firstmate is already open in another Pi process. Quit it, then try again.',
+      )
+    } finally {
+      client.close()
+      await stopProcess(manager)
+      await rm(directory, { force: true, recursive: true })
+    }
+  },
+)
+
+test(
+  'refuses to resume a Firstmate session owned by another live process',
+  { skip: process.platform === 'win32', timeout: 10_000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'pi-manager-'))
+    const port = 45_000 + (process.pid % 10_000)
+    await writeFakePi(directory)
+    const fixture = await createFirstmateFixture(directory)
+    const manager = spawn(process.execPath, ['server/manager.ts'], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PATH: `${fakePiBin(directory)}${delimiter}${process.env.PATH}`,
+        PI_LIVECRAFT_MANAGER_PORT: String(port),
+        ...fixture.environment,
+      },
+      stdio: 'ignore',
+    })
+    const owner = spawn(
+      process.execPath,
+      ['--eval', 'setInterval(() => {}, 1_000)', '--', '--session', fixture.sessionPath],
+      { stdio: 'ignore' },
+    )
+    const client = await connectManager(port)
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      const refused = await client.request('launch_preset', { preset: 'firstmate' })
+      assert.equal(refused.ok, false)
+      assert.equal(
+        refused.error,
+        'Firstmate is already open in another Pi process. Quit it, then try again.',
+      )
+
+      await stopProcess(owner)
+      const resumed = await client.request('launch_preset', { preset: 'firstmate' })
+      assert.equal(resumed.ok, true)
+      assert.equal(isObject(resumed.data) && resumed.data.sessionPath, fixture.sessionPath)
+    } finally {
+      client.close()
+      await stopProcess(owner)
+      await stopProcess(manager)
+      await rm(directory, { force: true, recursive: true })
+    }
+  },
+)
+
+test(
   'keeps three Pi processes and does not reuse a recently idle one',
   { timeout: 10_000 },
   async () => {
@@ -685,6 +848,82 @@ test('improves a prompt with a direction preset', { timeout: 10_000 }, async () 
   }
 })
 
+async function createFirstmateFixture(directory: string): Promise<{
+  environment: NodeJS.ProcessEnv
+  sessionPath: string
+  workspace: string
+}> {
+  const workspace = join(directory, 'firstmate')
+  const fmHome = join(directory, 'fm-home')
+  const agentDirectory = join(directory, 'firstmate-profile')
+  const extensionDirectory = join(workspace, '.pi', 'extensions')
+  const turnendGuard = join(extensionDirectory, 'fm-primary-turnend-guard.ts')
+  const piWatch = join(extensionDirectory, 'fm-primary-pi-watch.ts')
+  const sessionDirectory = join(agentDirectory, 'sessions', 'firstmate')
+  const sessionPath = join(sessionDirectory, 'primary.jsonl')
+  const olderSessionPath = join(sessionDirectory, 'older.jsonl')
+  await Promise.all([
+    mkdir(fmHome, { recursive: true }),
+    mkdir(extensionDirectory, { recursive: true }),
+    mkdir(sessionDirectory, { recursive: true }),
+  ])
+  await Promise.all([
+    writeFile(turnendGuard, 'export default function firstmateTurnendGuard() {}\n'),
+    writeFile(piWatch, 'export default function firstmatePiWatch() {}\n'),
+    writeFile(
+      olderSessionPath,
+      `${
+        JSON.stringify({
+          type: 'session',
+          id: 'older-session',
+          timestamp: '2025-01-01T00:00:00.000Z',
+          cwd: workspace,
+        })
+      }\n${
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2025-01-01T00:00:01.000Z',
+          message: { role: 'user', content: 'Older primary work' },
+        })
+      }\n`,
+    ),
+    writeFile(
+      sessionPath,
+      `${
+        JSON.stringify({
+          type: 'session',
+          id: 'primary-session',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          cwd: workspace,
+        })
+      }\n${
+        JSON.stringify({
+          type: 'session_info',
+          name: 'Primary Firstmate',
+        })
+      }\n${
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-01-01T00:00:01.000Z',
+          message: { role: 'user', content: 'Primary work' },
+        })
+      }\n`,
+    ),
+  ])
+  return {
+    workspace,
+    sessionPath,
+    environment: {
+      PI_LIVECRAFT_FIRSTMATE_WORKSPACE: workspace,
+      PI_LIVECRAFT_FIRSTMATE_HOME: fmHome,
+      PI_LIVECRAFT_FIRSTMATE_AGENT_DIR: agentDirectory,
+      PI_LIVECRAFT_FIRSTMATE_TURNEND_GUARD: turnendGuard,
+      PI_LIVECRAFT_FIRSTMATE_PI_WATCH: piWatch,
+      PI_LIVECRAFT_TEST_FIRSTMATE_SESSION: sessionPath,
+    },
+  }
+}
+
 async function writeFakePi(
   directory: string,
   emitStartupEvent = false,
@@ -702,12 +941,22 @@ let sessionPath = sessionArgument !== -1
   ? sessionDirectory + '/' + process.argv[sessionIdArgument + 1] + '.jsonl'
   : ''
 let createdSessionCount = 0
-const expectedExtensions = ${
+const livecraftExtensions = ${
     JSON.stringify([
       join(process.cwd(), 'pi-extensions/ask-user-question.ts'),
       join(process.cwd(), 'pi-extensions/quotas.ts'),
     ])
   }
+const firstmate = process.env.FM_HOME !== undefined
+  && process.env.FM_HOME === process.env.PI_LIVECRAFT_FIRSTMATE_HOME
+  && process.env.PI_CODING_AGENT_DIR === process.env.PI_LIVECRAFT_FIRSTMATE_AGENT_DIR
+const expectedExtensions = firstmate
+  ? [
+    ...livecraftExtensions,
+    process.env.PI_LIVECRAFT_FIRSTMATE_TURNEND_GUARD,
+    process.env.PI_LIVECRAFT_FIRSTMATE_PI_WATCH,
+  ]
+  : livecraftExtensions
 const extensionPaths = process.argv.flatMap((argument, index) =>
   argument === '--extension' ? [process.argv[index + 1]] : []
 )
@@ -731,6 +980,21 @@ if (isolated) {
   }
   if (JSON.stringify(extensionPaths) !== JSON.stringify(expectedExtensions)) {
     throw new Error('Unexpected persistent extensions: ' + JSON.stringify(extensionPaths))
+  }
+  if (firstmate) {
+    const expectedArgs = [
+      '--mode',
+      'rpc',
+      ...expectedExtensions.flatMap((path) => ['--extension', path]),
+      '--session',
+      process.env.PI_LIVECRAFT_TEST_FIRSTMATE_SESSION,
+    ]
+    if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(expectedArgs)) {
+      throw new Error('Unexpected Firstmate arguments: ' + JSON.stringify(process.argv.slice(2)))
+    }
+    if (process.cwd() !== process.env.PI_LIVECRAFT_FIRSTMATE_WORKSPACE) {
+      throw new Error('Unexpected Firstmate workspace: ' + process.cwd())
+    }
   }
 }
 const emitStartupEvent = ${emitStartupEvent}
@@ -810,6 +1074,8 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if (!isolated && command.type === 'prompt') {
     if (command.message === '/select') {
       console.log(JSON.stringify({ type: 'extension_ui_request', id: 'select-test', method: 'select', title: 'Select an agent', options: ['worker'] }))
+    } else if (command.message === '/lavish') {
+      console.log(JSON.stringify({ type: 'extension_ui_request', id: 'lavish-test', method: 'confirm', title: 'Lavish decision', message: 'Approve the primary decision?' }))
     } else {
       streaming = command.message !== '/handled'
     }
@@ -992,7 +1258,8 @@ function isManagerEvent(value: unknown): value is ManagerEvent {
     && typeof value.sessionId === 'string'
 }
 async function stopProcess(child: ReturnType<typeof spawn>): Promise<void> {
-  if (child.exitCode !== null || !child.pid) return
+  if (child.exitCode !== null || child.signalCode !== null || !child.pid) return
+  const exited = once(child, 'exit')
   if (process.platform === 'win32') {
     const taskkill = spawn('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], {
       shell: false,
@@ -1000,10 +1267,11 @@ async function stopProcess(child: ReturnType<typeof spawn>): Promise<void> {
       windowsHide: true,
     })
     await once(taskkill, 'exit')
+    await exited
     return
   }
   child.kill('SIGTERM')
-  await once(child, 'exit')
+  await exited
 }
 
 function once(process: ReturnType<typeof spawn>, event: 'exit'): Promise<void> {

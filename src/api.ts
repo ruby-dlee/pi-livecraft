@@ -196,6 +196,14 @@ export async function createSession(cwd: string): Promise<SessionSummary> {
   })
 }
 
+/** Opens the fixed manager-owned Firstmate preset without accepting browser configuration. */
+export async function launchFirstmate(): Promise<SessionSummary> {
+  return request<SessionSummary>('/api/firstmate/launch', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+}
+
 export async function openSession(cwd: string, sessionPath: string): Promise<SessionSummary> {
   return request<SessionSummary>('/api/sessions', {
     method: 'POST',

@@ -8,6 +8,7 @@ import {
   getGitSnapshot,
   getQuotas,
   improvePrompt,
+  launchFirstmate,
   openExplorer,
   openSession,
   openTerminal,
@@ -1136,6 +1137,10 @@ function App() {
         onCloseSession={closeManagedSession}
         onCreate={async () => {
           await startAndSelectSession(() => createSession(workspacePath))
+        }}
+        onLaunchFirstmate={async () => {
+          const session = await launchFirstmate()
+          selectWorkspace(session.cwd, session.id)
         }}
         onOpenSession={async (recentSession) => {
           await startAndSelectSession(() => openSession(workspacePath, recentSession.sessionPath))
