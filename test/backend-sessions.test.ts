@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -20,18 +20,21 @@ interface BackendFixture {
   workspace: string
 }
 
-test('Firstmate preset sessions remain usable through backend HTTP endpoints', async (t) => {
+test('Firstmate preset sessions remain usable through a symlinked workspace override', async (t) => {
   const fixture = await createBackendFixture()
   t.after(fixture.close)
 
-  const recentResponse = await fetch(
-    `${fixture.baseUrl}/api/sessions/recent?cwd=${encodeURIComponent(fixture.workspace)}`,
-  )
-  assert.equal(recentResponse.status, 200)
-  const recent = await recentResponse.json() as Array<{ sessionPath?: string }>
-  assert.equal(recent.some(({ sessionPath }) => sessionPath === fixture.sessionPath), true)
+  await t.test('lists a preset session when the workspace override is a symlink', async () => {
+    const response = await fetch(
+      `${fixture.baseUrl}/api/sessions/recent?cwd=${encodeURIComponent(fixture.workspace)}`,
+    )
 
-  await t.test('opens a session returned from Firstmate preset storage', async () => {
+    assert.equal(response.status, 200)
+    const recent = await response.json() as Array<{ sessionPath?: string }>
+    assert.equal(recent.some(({ sessionPath }) => sessionPath === fixture.sessionPath), true)
+  })
+
+  await t.test('opens a preset-profile session through the symlinked workspace', async () => {
     const response = await fetch(`${fixture.baseUrl}/api/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -50,7 +53,7 @@ test('Firstmate preset sessions remain usable through backend HTTP endpoints', a
     })
   })
 
-  await t.test('renames a session returned from Firstmate preset storage', async () => {
+  await t.test('renames a preset-profile session through the symlinked workspace', async () => {
     const response = await fetch(`${fixture.baseUrl}/api/sessions/rename`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -77,6 +80,7 @@ test('Firstmate preset sessions remain usable through backend HTTP endpoints', a
 async function createBackendFixture(): Promise<BackendFixture> {
   const root = await mkdtemp(join(tmpdir(), 'livecraft-backend-sessions-'))
   const workspacePath = join(root, 'workspace')
+  const workspaceOverride = join(root, 'firstmate-workspace-link')
   const standardAgentDirectory = join(root, 'standard-agent')
   const firstmateAgentDirectory = join(root, 'firstmate-agent')
   const firstmateSessionDirectory = join(firstmateAgentDirectory, 'sessions', 'workspace')
@@ -85,7 +89,10 @@ async function createBackendFixture(): Promise<BackendFixture> {
     mkdir(join(standardAgentDirectory, 'sessions'), { recursive: true }),
     mkdir(firstmateSessionDirectory, { recursive: true }),
   ])
+  await symlink(workspacePath, workspaceOverride, process.platform === 'win32' ? 'junction' : 'dir')
   const workspace = await realpath(workspacePath)
+  assert.notEqual(workspaceOverride, workspace)
+  assert.equal(await realpath(workspaceOverride), workspace)
   const sessionPath = join(firstmateSessionDirectory, 'firstmate.jsonl')
   await writeFile(
     sessionPath,
@@ -138,7 +145,7 @@ async function createBackendFixture(): Promise<BackendFixture> {
       PI_CODING_AGENT_DIR: standardAgentDirectory,
       PI_LIVECRAFT_BACKEND_PORT: String(backendPort),
       PI_LIVECRAFT_FIRSTMATE_AGENT_DIR: firstmateAgentDirectory,
-      PI_LIVECRAFT_FIRSTMATE_WORKSPACE: workspace,
+      PI_LIVECRAFT_FIRSTMATE_WORKSPACE: workspaceOverride,
       PI_LIVECRAFT_MANAGER_PORT: String(managerPort),
     },
   })

@@ -6,7 +6,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { ManagerClient } from './manager-client.ts'
 import { ManagerRuntimeMonitor } from './manager-runtime-monitor.ts'
 import { listRecentPiSessions, loadPiSession } from './pi-session-store.ts'
-import { firstmatePreset } from './firstmate-preset.ts'
+import { firstmatePreset, type FirstmatePreset } from './firstmate-preset.ts'
 import {
   commitChanges,
   discardChanges,
@@ -182,8 +182,8 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
   if (method === 'GET' && url.pathname === '/api/sessions/recent') {
     const cwd = await resolveWorkingDirectory(url.searchParams.get('cwd') ?? '~/.pi')
     const genericSessions = await listRecentPiSessions(cwd)
-    const preset = firstmatePreset()
-    const presetSessions = cwd === preset.workspace
+    const preset = await firstmatePresetForWorkspace(cwd)
+    const presetSessions = preset
       ? await listRecentPiSessions(cwd, preset.sessionDirectory)
       : []
     const sessions = [...genericSessions, ...presetSessions]
@@ -547,13 +547,23 @@ function arrayData(response: JsonObject, key: string): JsonObject[] {
   return response.data[key].filter(isObject)
 }
 
+/** Matches the canonical request workspace to the trusted preset without exposing raw path aliases. */
+async function firstmatePresetForWorkspace(cwd: string): Promise<FirstmatePreset | undefined> {
+  const preset = firstmatePreset()
+  try {
+    return cwd === await realpath(preset.workspace) ? preset : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** Loads sessions from either standard Pi storage or the trusted Firstmate preset storage. */
 async function loadWorkspacePiSession(sessionPath: string, cwd: string): Promise<RecentSession> {
   try {
     return await loadPiSession(sessionPath)
   } catch (standardDirectoryError) {
-    const preset = firstmatePreset()
-    if (cwd !== preset.workspace) throw standardDirectoryError
+    const preset = await firstmatePresetForWorkspace(cwd)
+    if (!preset) throw standardDirectoryError
     return loadPiSession(sessionPath, preset.sessionDirectory)
   }
 }
