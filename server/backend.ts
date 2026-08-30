@@ -6,6 +6,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { ManagerClient } from './manager-client.ts'
 import { ManagerRuntimeMonitor } from './manager-runtime-monitor.ts'
 import { listRecentPiSessions, loadPiSession } from './pi-session-store.ts'
+import { firstmatePreset } from './firstmate-preset.ts'
 import {
   commitChanges,
   discardChanges,
@@ -152,6 +153,18 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     return
   }
 
+  if (method === 'POST' && url.pathname === '/api/firstmate/launch') {
+    const body = await readJsonBody(request)
+    if (Object.keys(body).length > 0)
+      throw new HttpError(400, 'The Firstmate launch preset does not accept input')
+    sendJson(
+      response,
+      200,
+      await manager.request({ action: 'launch_preset', preset: 'firstmate' }),
+    )
+    return
+  }
+
   if (method === 'GET' && url.pathname === '/api/quotas') {
     sendJson(response, 200, await quotas.snapshot())
     return
@@ -167,7 +180,18 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
 
   if (method === 'GET' && url.pathname === '/api/sessions/recent') {
     const cwd = await resolveWorkingDirectory(url.searchParams.get('cwd') ?? '~/.pi')
-    sendJson(response, 200, await listRecentPiSessions(cwd))
+    const genericSessions = await listRecentPiSessions(cwd)
+    const preset = firstmatePreset()
+    const presetSessions = cwd === preset.workspace
+      ? await listRecentPiSessions(cwd, preset.sessionDirectory)
+      : []
+    const sessions = [...genericSessions, ...presetSessions]
+      .filter((session, index, all) =>
+        all.findIndex(({ sessionPath }) => sessionPath === session.sessionPath) === index
+      )
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, 30)
+    sendJson(response, 200, sessions)
     return
   }
 

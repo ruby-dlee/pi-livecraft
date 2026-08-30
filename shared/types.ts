@@ -125,8 +125,10 @@ export interface ManagerRequest {
     | 'command'
     | 'improve_prompt'
     | 'run_prompt'
+    | 'launch_preset'
     | 'status'
     | 'restart'
+  preset?: 'firstmate'
   sessionId?: string
   cwd?: string
   name?: string

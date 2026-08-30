@@ -74,12 +74,18 @@ To launch Livecraft from any directory, link this checkout once in each shell en
 
 ```bash
 npm link
-pi-livecraft
+livecraft
 ```
 
-WSL/Linux and native Windows have separate global npm paths: run `npm link` from a checkout visible to each environment. The command always runs this repository's `npm run dev`.
+`pi-livecraft` remains available as an alias. WSL/Linux and native Windows have separate global npm paths: run `npm link` from a checkout visible to each environment. Both commands run this repository's `npm run dev` with the Node, npm, and Pi selected by the launcher's `PATH`.
 
 Open [http://127.0.0.1:5173](http://127.0.0.1:5173) and you should see Livecraft.
+
+### Firstmate launch preset
+
+This fork shows **Launch Firstmate** above generic session creation. One click asks the existing manager to focus its matching primary process or safely resume the newest session in `/Users/dongkeun/firstmate`. The checked-in preset uses `FM_HOME=/mnt/task/.fm-return`, `PI_CODING_AGENT_DIR=/Users/dongkeun/.pi/firstmate-local`, and the two primary Firstmate extensions. The browser sends no paths, commands, or executable configuration.
+
+Trusted launch wrappers and tests can override only the preset paths with `PI_LIVECRAFT_FIRSTMATE_WORKSPACE`, `PI_LIVECRAFT_FIRSTMATE_HOME`, `PI_LIVECRAFT_FIRSTMATE_AGENT_DIR`, `PI_LIVECRAFT_FIRSTMATE_TURNEND_GUARD`, and `PI_LIVECRAFT_FIRSTMATE_PI_WATCH`. Pi itself is still resolved from the launcher's `PATH`; do not set a version-specific Node or Pi path in frontend code.
 
 ## What is already in the box
 

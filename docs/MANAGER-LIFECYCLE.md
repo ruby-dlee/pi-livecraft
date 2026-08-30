@@ -16,6 +16,8 @@ Process ownership must not move into the backend: doing so would make backend re
 
 When a session is created or reopened, the manager first keeps three live Pi processes for the same canonical working directory: the first three sessions always start their own process. Once that minimum is reached, it reassigns only an idle process that has remained unused for more than three minutes through Pi's public `new_session` or `switch_session` RPC command. A process is not reusable while it has running work, an in-flight RPC request, pending blocking UI, or recent activity; if no process qualifies, the manager starts another one. The pool may therefore grow beyond three processes during bursts, while the replaced session remains persisted in Pi history and can be reopened later.
 
+The fixed Firstmate launch preset is intentionally outside this generic reuse pool. Repeated launches focus its matching manager-owned process. Before resuming its newest persisted session, the manager also refuses a conflicting managed process or a live local process whose arguments own that same session path. The preset still starts through `PiProcess`; it does not create a second process owner.
+
 ## Runtime revision
 
 `server/manager-runtime-files.json` declares the local value-import graph loaded by `server/manager.ts`. The supervisor calculates its revision immediately before spawning the manager and passes that immutable identity to the child. The backend independently recalculates the same revision when the manifest or a declared file changes.
