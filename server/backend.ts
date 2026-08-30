@@ -37,6 +37,7 @@ import type {
   DirectoryListing,
   JsonObject,
   ManagerEvent,
+  RecentSession,
   SessionSnapshot,
 } from '../shared/types.ts'
 import { isObject } from '../shared/is-object.ts'
@@ -380,7 +381,7 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
       || /[\r\n]/.test(body.name)
     ) throw new HttpError(400, 'Session name must contain between 1 and 120 characters')
     const cwd = await resolveWorkingDirectory(body.cwd)
-    const session = await loadPiSession(body.sessionPath)
+    const session = await loadWorkspacePiSession(body.sessionPath, cwd)
     if (session.cwd !== cwd)
       throw new HttpError(400, 'Pi session does not belong to this working directory')
     await manager.request({
@@ -397,7 +398,7 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     const body = await readJsonBody(request)
     const cwd = await resolveWorkingDirectory(typeof body.cwd === 'string' ? body.cwd : '~/.pi')
     if (typeof body.sessionPath === 'string') {
-      const session = await loadPiSession(body.sessionPath)
+      const session = await loadWorkspacePiSession(body.sessionPath, cwd)
       if (session.cwd !== cwd)
         throw new HttpError(400, 'Pi session does not belong to this working directory')
       sendJson(
@@ -544,6 +545,17 @@ function objectData(response: JsonObject): JsonObject | null {
 function arrayData(response: JsonObject, key: string): JsonObject[] {
   if (!isObject(response.data) || !Array.isArray(response.data[key])) return []
   return response.data[key].filter(isObject)
+}
+
+/** Loads sessions from either standard Pi storage or the trusted Firstmate preset storage. */
+async function loadWorkspacePiSession(sessionPath: string, cwd: string): Promise<RecentSession> {
+  try {
+    return await loadPiSession(sessionPath)
+  } catch (standardDirectoryError) {
+    const preset = firstmatePreset()
+    if (cwd !== preset.workspace) throw standardDirectoryError
+    return loadPiSession(sessionPath, preset.sessionDirectory)
+  }
 }
 
 /** Canonicalizes a client-provided path and rejects missing paths or non-directories. */
