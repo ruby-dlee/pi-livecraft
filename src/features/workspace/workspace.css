@@ -297,35 +297,94 @@
   transform: translateX(1px);
 }
 
+.session-launch-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  margin-bottom: 3px;
+}
+.firstmate-launch,
 .new-session {
   width: 100%;
-  height: 44px;
-  margin-bottom: 4px;
-  border: 1px solid var(--accent);
   border-radius: 9px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    color 180ms ease,
+    transform 180ms ease;
+}
+.firstmate-launch {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  height: 48px;
+  border: 1px solid var(--accent);
   padding: 0 12px;
+  overflow: hidden;
   background: var(--accent);
   color: var(--on-accent);
-  font-size: 13px;
-  font-weight: 700;
+  text-align: left;
   box-shadow:
     0 2px 0 var(--accent-hover),
     0 5px 10px color-mix(in srgb, var(--accent) 16%, transparent);
-  transition:
-    background 180ms ease,
-    box-shadow 180ms ease,
-    transform 180ms ease;
 }
-.new-session:hover:not(:disabled) {
+.firstmate-launch > svg {
+  flex: 0 0 auto;
+}
+.firstmate-launch > span {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+.firstmate-launch strong,
+.firstmate-launch small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.firstmate-launch strong {
+  font-size: 13px;
+}
+.firstmate-launch small {
+  color: color-mix(in srgb, var(--on-accent) 78%, transparent);
+  font-size: 10px;
+  font-weight: 550;
+}
+.firstmate-launch:hover:not(:disabled) {
   background: var(--accent-hover);
   box-shadow:
     0 1px 0 color-mix(in srgb, var(--accent-hover) 50%, black),
     0 4px 8px color-mix(in srgb, var(--accent) 18%, transparent);
   transform: translateY(1px);
 }
+.new-session {
+  height: 34px;
+  border: 1px solid color-mix(in srgb, var(--accent) 54%, var(--line-strong));
+  padding: 0 12px;
+  background: var(--surface);
+  color: var(--accent-hover);
+  font-size: 12px;
+  box-shadow: none;
+}
+.new-session:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.firstmate-launch:focus-visible,
+.new-session:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.firstmate-launch:active:not(:disabled),
 .new-session:active:not(:disabled) {
   transform: scale(0.97);
 }
+.firstmate-launch:disabled,
 .new-session:disabled {
   cursor: not-allowed;
   opacity: 0.5;

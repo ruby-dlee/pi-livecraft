@@ -120,13 +120,16 @@ export interface ManagerRequest {
     | 'list'
     | 'create'
     | 'open'
+    | 'open_preset'
     | 'close'
     | 'rename'
     | 'command'
     | 'improve_prompt'
     | 'run_prompt'
+    | 'launch_preset'
     | 'status'
     | 'restart'
+  preset?: 'firstmate'
   sessionId?: string
   cwd?: string
   name?: string

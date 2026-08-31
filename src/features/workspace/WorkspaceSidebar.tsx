@@ -43,6 +43,7 @@ interface WorkspaceSidebarProps {
   onChooseWorkspace: () => void
   onCloseSession: (sessionId: string) => Promise<void>
   onCreate: () => Promise<void>
+  onLaunchFirstmate: () => Promise<void>
   onOpenSession: (session: RecentSession) => Promise<void>
   onOpenOtherWorkspaceSession: (session: PinnedSession) => Promise<void>
   onSelectOtherWorkspaceSession: (session: SessionSummary) => void
@@ -71,6 +72,7 @@ export function WorkspaceSidebar({
   onChooseWorkspace,
   onCloseSession,
   onCreate,
+  onLaunchFirstmate,
   onOpenSession,
   onOpenOtherWorkspaceSession,
   onSelectOtherWorkspaceSession,
@@ -330,7 +332,10 @@ export function WorkspaceSidebar({
           </button>
         </Tooltip>
       </div>
-      <NewSessionButton onCreate={onCreate} onError={onError} />
+      <div className='session-launch-actions'>
+        <FirstmateLaunchButton onLaunch={onLaunchFirstmate} onError={onError} />
+        <NewSessionButton onCreate={onCreate} onError={onError} />
+      </div>
       <nav className='session-list' aria-label='Recent Pi sessions'>
         {isRefreshing && visibleSessions.length === 0 && (
           <p className='session-list-loading' role='status'>Loading sessions…</p>
@@ -527,6 +532,39 @@ export function WorkspaceSidebar({
   )
 }
 
+/** Opens the constrained primary preset while preventing duplicate clicks. */
+function FirstmateLaunchButton(
+  { onLaunch, onError }: { onLaunch: () => Promise<void>; onError: (cause: unknown) => void },
+) {
+  const [busy, setBusy] = useState(false)
+
+  async function launch(): Promise<void> {
+    setBusy(true)
+    try {
+      await onLaunch()
+    } catch (cause) {
+      onError(cause)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <button
+      className='firstmate-launch'
+      disabled={busy}
+      onClick={() => void launch()}
+      type='button'
+    >
+      <FirstmateIcon />
+      <span>
+        <strong>{busy ? 'Opening Firstmate…' : 'Launch Firstmate'}</strong>
+        <small>Open or resume primary</small>
+      </span>
+    </button>
+  )
+}
+
 /** Prevents duplicate session creation and reports errors to the container. */
 function NewSessionButton(
   { onCreate, onError }: { onCreate: () => Promise<void>; onError: (cause: unknown) => void },
@@ -553,6 +591,25 @@ function NewSessionButton(
     >
       {busy ? 'Starting…' : '＋ New session'}
     </button>
+  )
+}
+
+function FirstmateIcon() {
+  return (
+    <svg
+      aria-hidden='true'
+      fill='none'
+      height='18'
+      stroke='currentColor'
+      strokeLinecap='round'
+      strokeLinejoin='round'
+      strokeWidth='1.7'
+      viewBox='0 0 24 24'
+      width='18'
+    >
+      <path d='M12 3 5 6v5c0 4.6 2.8 8 7 10 4.2-2 7-5.4 7-10V6l-7-3Z' />
+      <path d='m9 12 2 2 4-4' />
+    </svg>
   )
 }
 

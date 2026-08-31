@@ -17,6 +17,7 @@
     "local-first"
   ],
   "bin": {
+    "livecraft": "./bin/pi-livecraft.mjs",
     "pi-livecraft": "./bin/pi-livecraft.mjs"
   },
   "engines": {

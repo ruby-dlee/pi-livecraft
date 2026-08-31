@@ -11,6 +11,13 @@ import { createServer, type Socket } from 'node:net'
 import { JsonLineDecoder, encodeJsonLine } from './jsonl.ts'
 import { PiProcess, terminateAllPiProcesses } from './pi-process.ts'
 import {
+  externalPiSessionOwner,
+  FIRSTMATE_PRESET_ID,
+  firstmatePreset,
+  validateFirstmatePreset,
+} from './firstmate-preset.ts'
+import { listRecentPiSessions, loadPiSession } from './pi-session-store.ts'
+import {
   generateProjectMap,
   improvementDirectionInstruction,
   loadPromptImprovementSystemPrompt,
@@ -32,6 +39,7 @@ const idleReuseAfterMs = readDuration('PI_LIVECRAFT_IDLE_REUSE_AFTER_MS', 3 * 60
 const clients = new Set<Socket>()
 const sessions = new Map<string, ManagedSession>()
 const openingSessions = new Map<string, Promise<SessionSummary>>()
+let firstmateLaunch: Promise<SessionSummary> | undefined
 const restartExitCode = readRestartExitCode()
 const supervised = process.env.PI_LIVECRAFT_MANAGER_SUPERVISED === '1'
   && restartExitCode !== undefined
@@ -48,6 +56,7 @@ let activeRequests = 0
 interface ManagedSession {
   summary: SessionSummary
   pi: PiProcess
+  presetId?: typeof FIRSTMATE_PRESET_ID
   pendingUi: Map<string, JsonObject>
   inFlightRequests: number
   switching: boolean
@@ -116,8 +125,10 @@ async function handleRequest(socket: Socket, value: unknown): Promise<void> {
   }
 
   const tracksActivity = value.action === 'create' || value.action === 'open'
-    || value.action === 'close' || value.action === 'rename' || value.action === 'command'
+    || value.action === 'open_preset' || value.action === 'close'
+    || value.action === 'rename' || value.action === 'command'
     || value.action === 'improve_prompt' || value.action === 'run_prompt'
+    || value.action === 'launch_preset'
   if (tracksActivity) activeRequests += 1
   try {
     let data: unknown
@@ -140,6 +151,13 @@ async function handleRequest(socket: Socket, value: unknown): Promise<void> {
     } else if (value.action === 'list') {
       await refreshSessionActivity()
       data = listSessions()
+    } else if (value.action === 'launch_preset') {
+      if (value.preset !== FIRSTMATE_PRESET_ID) throw new Error('Unknown launch preset')
+      data = await launchFirstmate()
+    } else if (value.action === 'open_preset') {
+      if (value.preset !== FIRSTMATE_PRESET_ID) throw new Error('Unknown launch preset')
+      if (typeof value.sessionPath !== 'string') throw new Error('Preset session path is required')
+      data = await launchFirstmate(value.sessionPath)
     } else if (value.action === 'create') data = await createSession(value)
     else if (value.action === 'open') data = await openSession(value)
     else if (value.action === 'close') data = await closeSession(value)
@@ -201,6 +219,71 @@ function markSessionIdle(session: ManagedSession, resetIdleSince = false): void 
 
 function hasBeenIdleLongEnough(session: ManagedSession): boolean {
   return session.idleSince !== undefined && Date.now() - session.idleSince > idleReuseAfterMs
+}
+
+/** Opens or safely resumes the one manager-owned primary Firstmate process. */
+async function launchFirstmate(sessionPath?: string): Promise<SessionSummary> {
+  const existing = [...sessions.values()].find((session) =>
+    session.presetId === FIRSTMATE_PRESET_ID && session.summary.status !== 'exited'
+  )
+  if (existing) return { ...existing.summary, pendingUi: [...existing.pendingUi.values()] }
+  if (firstmateLaunch) return { ...await firstmateLaunch, pendingUi: [] }
+
+  const operation = (async (): Promise<SessionSummary> => {
+    const preset = firstmatePreset()
+    await validateFirstmatePreset(preset)
+    const workspace = await realpath(preset.workspace)
+    const recent = sessionPath
+      ? await loadPiSession(sessionPath, preset.sessionDirectory)
+      : (await listRecentPiSessions(workspace, preset.sessionDirectory))[0]
+    if (recent && recent.cwd !== workspace)
+      throw new Error('Firstmate session does not belong to the configured workspace')
+    if (recent) {
+      const managedOwner = [...sessions.values()].find((session) =>
+        session.summary.sessionPath === recent.sessionPath && session.summary.status !== 'exited'
+      )
+      if (managedOwner) {
+        if (managedOwner.presetId === FIRSTMATE_PRESET_ID) return managedOwner.summary
+        throw new Error(
+          'Firstmate is already open in another Pi process. Quit it, then try again.',
+        )
+      }
+    }
+    const managedPids = new Set(
+      [...sessions.values()].flatMap(({ pi }) => pi.child.pid ? [pi.child.pid] : []),
+    )
+    if (await externalPiSessionOwner(recent?.sessionPath, workspace, managedPids)) {
+      throw new Error(
+        'Firstmate is already open in another Pi process. Quit it, then try again.',
+      )
+    }
+
+    const summary: SessionSummary = {
+      id: randomUUID(),
+      cwd: workspace,
+      name: recent?.name ?? 'Firstmate',
+      sessionPath: recent?.sessionPath,
+      status: 'starting',
+      pendingUi: [],
+    }
+    await startSession(summary, {
+      presetId: preset.id,
+      persistentExtensions: preset.extensions,
+      persistentEnvironment: {
+        FM_HOME: preset.fmHome,
+        PI_CODING_AGENT_DIR: preset.agentDirectory,
+      },
+    })
+    broadcast({ kind: 'event', event: 'session_created', sessionId: summary.id, data: summary })
+    return summary
+  })()
+  firstmateLaunch = operation
+  try {
+    const summary = await operation
+    return { ...summary, pendingUi: [] }
+  } finally {
+    if (firstmateLaunch === operation) firstmateLaunch = undefined
+  }
 }
 
 async function createSession(request: ManagerRequest): Promise<SessionSummary> {
@@ -309,14 +392,30 @@ async function renameSession(request: ManagerRequest): Promise<{ name: string }>
   }
 }
 
-/** Keeps three workspace sessions alive and reuses only long-idle processes. */
-async function startSession(summary: SessionSummary): Promise<void> {
-  const openSessions = [...sessions.values()]
-    .filter(({ summary: current }) => current.cwd === summary.cwd && current.status !== 'exited')
-    .length
-  const reusable = openSessions >= minimumOpenSessionsPerWorkspace
+interface SessionLaunchOptions {
+  presetId: typeof FIRSTMATE_PRESET_ID
+  persistentExtensions: string[]
+  persistentEnvironment: NodeJS.ProcessEnv
+}
+
+/** Keeps three generic workspace sessions alive and keeps launch presets out of that reuse pool. */
+async function startSession(
+  summary: SessionSummary,
+  launchOptions?: SessionLaunchOptions,
+): Promise<void> {
+  const openSessions = launchOptions
+    ? 0
+    : [...sessions.values()]
+      .filter((session) =>
+        !session.presetId
+        && session.summary.cwd === summary.cwd
+        && session.summary.status !== 'exited'
+      )
+      .length
+  const reusable = !launchOptions && openSessions >= minimumOpenSessionsPerWorkspace
     ? [...sessions.values()].find((session) =>
-      session.summary.cwd === summary.cwd
+      !session.presetId
+      && session.summary.cwd === summary.cwd
       && session.summary.status === 'idle'
       && session.pendingUi.size === 0
       && session.inFlightRequests === 0
@@ -326,10 +425,11 @@ async function startSession(summary: SessionSummary): Promise<void> {
     : undefined
   if (reusable && await reuseSession(reusable, summary)) return
 
-  const pi = new PiProcess(summary.cwd, summary.id, summary.sessionPath)
+  const pi = new PiProcess(summary.cwd, summary.id, summary.sessionPath, launchOptions)
   const session: ManagedSession = {
     summary,
     pi,
+    presetId: launchOptions?.presetId,
     pendingUi: new Map(),
     inFlightRequests: 0,
     switching: false,
@@ -620,9 +720,11 @@ function respond(socket: Socket, response: ManagerResponse): void {
 function isManagerRequest(value: unknown): value is ManagerRequest {
   if (!isObject(value) || typeof value.id !== 'string') return false
   return value.action === 'list' || value.action === 'create' || value.action === 'open'
-    || value.action === 'close' || value.action === 'rename' || value.action === 'command'
+    || value.action === 'open_preset' || value.action === 'close'
+    || value.action === 'rename' || value.action === 'command'
     || value.action === 'improve_prompt' || value.action === 'run_prompt'
-    || value.action === 'status' || value.action === 'restart'
+    || value.action === 'launch_preset' || value.action === 'status'
+    || value.action === 'restart'
 }
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)

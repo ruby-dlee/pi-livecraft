@@ -6,6 +6,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { ManagerClient } from './manager-client.ts'
 import { ManagerRuntimeMonitor } from './manager-runtime-monitor.ts'
 import { listRecentPiSessions, loadPiSession } from './pi-session-store.ts'
+import { firstmatePreset, type FirstmatePreset } from './firstmate-preset.ts'
 import {
   commitChanges,
   discardChanges,
@@ -36,6 +37,7 @@ import type {
   DirectoryListing,
   JsonObject,
   ManagerEvent,
+  RecentSession,
   SessionSnapshot,
 } from '../shared/types.ts'
 import { isObject } from '../shared/is-object.ts'
@@ -152,6 +154,18 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     return
   }
 
+  if (method === 'POST' && url.pathname === '/api/firstmate/launch') {
+    const body = await readJsonBody(request)
+    if (Object.keys(body).length > 0)
+      throw new HttpError(400, 'The Firstmate launch preset does not accept input')
+    sendJson(
+      response,
+      200,
+      await manager.request({ action: 'launch_preset', preset: 'firstmate' }),
+    )
+    return
+  }
+
   if (method === 'GET' && url.pathname === '/api/quotas') {
     sendJson(response, 200, await quotas.snapshot())
     return
@@ -167,7 +181,18 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
 
   if (method === 'GET' && url.pathname === '/api/sessions/recent') {
     const cwd = await resolveWorkingDirectory(url.searchParams.get('cwd') ?? '~/.pi')
-    sendJson(response, 200, await listRecentPiSessions(cwd))
+    const genericSessions = await listRecentPiSessions(cwd)
+    const preset = await firstmatePresetForWorkspace(cwd)
+    const presetSessions = preset
+      ? await listRecentPiSessions(cwd, preset.sessionDirectory)
+      : []
+    const sessions = [...genericSessions, ...presetSessions]
+      .filter((session, index, all) =>
+        all.findIndex(({ sessionPath }) => sessionPath === session.sessionPath) === index
+      )
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, 30)
+    sendJson(response, 200, sessions)
     return
   }
 
@@ -356,7 +381,7 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
       || /[\r\n]/.test(body.name)
     ) throw new HttpError(400, 'Session name must contain between 1 and 120 characters')
     const cwd = await resolveWorkingDirectory(body.cwd)
-    const session = await loadPiSession(body.sessionPath)
+    const { session } = await loadWorkspacePiSession(body.sessionPath, cwd)
     if (session.cwd !== cwd)
       throw new HttpError(400, 'Pi session does not belong to this working directory')
     await manager.request({
@@ -373,18 +398,26 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     const body = await readJsonBody(request)
     const cwd = await resolveWorkingDirectory(typeof body.cwd === 'string' ? body.cwd : '~/.pi')
     if (typeof body.sessionPath === 'string') {
-      const session = await loadPiSession(body.sessionPath)
+      const { session, preset } = await loadWorkspacePiSession(body.sessionPath, cwd)
       if (session.cwd !== cwd)
         throw new HttpError(400, 'Pi session does not belong to this working directory')
       sendJson(
         response,
         201,
-        await manager.request({
-          action: 'open',
-          cwd,
-          name: session.name,
-          sessionPath: session.sessionPath,
-        }),
+        await manager.request(
+          preset
+            ? {
+              action: 'open_preset',
+              preset: preset.id,
+              sessionPath: session.sessionPath,
+            }
+            : {
+              action: 'open',
+              cwd,
+              name: session.name,
+              sessionPath: session.sessionPath,
+            },
+        ),
       )
       return
     }
@@ -520,6 +553,35 @@ function objectData(response: JsonObject): JsonObject | null {
 function arrayData(response: JsonObject, key: string): JsonObject[] {
   if (!isObject(response.data) || !Array.isArray(response.data[key])) return []
   return response.data[key].filter(isObject)
+}
+
+/** Matches the canonical request workspace to the trusted preset without exposing raw path aliases. */
+async function firstmatePresetForWorkspace(cwd: string): Promise<FirstmatePreset | undefined> {
+  const preset = firstmatePreset()
+  try {
+    return cwd === await realpath(preset.workspace) ? preset : undefined
+  } catch {
+    return undefined
+  }
+}
+
+interface LoadedWorkspacePiSession {
+  session: RecentSession
+  preset?: FirstmatePreset
+}
+
+/** Loads sessions from standard Pi storage or labels a trusted Firstmate preset session. */
+async function loadWorkspacePiSession(
+  sessionPath: string,
+  cwd: string,
+): Promise<LoadedWorkspacePiSession> {
+  try {
+    return { session: await loadPiSession(sessionPath) }
+  } catch (standardDirectoryError) {
+    const preset = await firstmatePresetForWorkspace(cwd)
+    if (!preset) throw standardDirectoryError
+    return { session: await loadPiSession(sessionPath, preset.sessionDirectory), preset }
+  }
 }
 
 /** Canonicalizes a client-provided path and rejects missing paths or non-directories. */
