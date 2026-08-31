@@ -331,7 +331,56 @@ test(
 )
 
 test(
-  'refuses a Firstmate preset when a generic managed process owns its session',
+  'opens a selected Firstmate preset with its profile and reuses the managed owner',
+  { timeout: 10_000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'pi-manager-'))
+    const port = 45_000 + (process.pid % 10_000)
+    await writeFakePi(directory)
+    const fixture = await createFirstmateFixture(directory)
+    const manager = spawn(process.execPath, ['server/manager.ts'], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PATH: `${fakePiBin(directory)}${delimiter}${process.env.PATH}`,
+        PI_LIVECRAFT_MANAGER_PORT: String(port),
+        ...fixture.environment,
+        PI_LIVECRAFT_TEST_FIRSTMATE_SESSION: fixture.olderSessionPath,
+      },
+      stdio: 'ignore',
+    })
+    const client = await connectManager(port)
+    try {
+      const [first, duplicate] = await Promise.all([
+        client.request('open_preset', {
+          preset: 'firstmate',
+          sessionPath: fixture.olderSessionPath,
+        }),
+        client.request('open_preset', {
+          preset: 'firstmate',
+          sessionPath: fixture.olderSessionPath,
+        }),
+      ])
+      assert.equal(first.ok, true)
+      assert.equal(duplicate.ok, true)
+      const id = sessionId(first)
+      assert.equal(sessionId(duplicate), id)
+      assert.equal(isObject(first.data) && first.data.cwd, fixture.workspace)
+      assert.equal(isObject(first.data) && first.data.sessionPath, fixture.olderSessionPath)
+      assert.equal(
+        sessionId(await client.request('launch_preset', { preset: 'firstmate' })),
+        id,
+      )
+    } finally {
+      client.close()
+      await stopProcess(manager)
+      await rm(directory, { force: true, recursive: true })
+    }
+  },
+)
+
+test(
+  'refuses selected and default Firstmate launches when a generic process owns its session',
   { timeout: 10_000 },
   async () => {
     const directory = await mkdtemp(join(tmpdir(), 'pi-manager-'))
@@ -359,10 +408,19 @@ test(
           .ok,
         true,
       )
-      const refused = await client.request('launch_preset', { preset: 'firstmate' })
-      assert.equal(refused.ok, false)
+      const selectedRefusal = await client.request('open_preset', {
+        preset: 'firstmate',
+        sessionPath: fixture.sessionPath,
+      })
+      assert.equal(selectedRefusal.ok, false)
       assert.equal(
-        refused.error,
+        selectedRefusal.error,
+        'Firstmate is already open in another Pi process. Quit it, then try again.',
+      )
+      const defaultRefusal = await client.request('launch_preset', { preset: 'firstmate' })
+      assert.equal(defaultRefusal.ok, false)
+      assert.equal(
+        defaultRefusal.error,
         'Firstmate is already open in another Pi process. Quit it, then try again.',
       )
     } finally {
@@ -399,15 +457,27 @@ test(
     const client = await connectManager(port)
     try {
       await new Promise((resolve) => setTimeout(resolve, 50))
-      const refused = await client.request('launch_preset', { preset: 'firstmate' })
-      assert.equal(refused.ok, false)
+      const selectedRefusal = await client.request('open_preset', {
+        preset: 'firstmate',
+        sessionPath: fixture.sessionPath,
+      })
+      assert.equal(selectedRefusal.ok, false)
       assert.equal(
-        refused.error,
+        selectedRefusal.error,
+        'Firstmate is already open in another Pi process. Quit it, then try again.',
+      )
+      const defaultRefusal = await client.request('launch_preset', { preset: 'firstmate' })
+      assert.equal(defaultRefusal.ok, false)
+      assert.equal(
+        defaultRefusal.error,
         'Firstmate is already open in another Pi process. Quit it, then try again.',
       )
 
       await stopProcess(owner)
-      const resumed = await client.request('launch_preset', { preset: 'firstmate' })
+      const resumed = await client.request('open_preset', {
+        preset: 'firstmate',
+        sessionPath: fixture.sessionPath,
+      })
       assert.equal(resumed.ok, true)
       assert.equal(isObject(resumed.data) && resumed.data.sessionPath, fixture.sessionPath)
     } finally {
@@ -896,6 +966,7 @@ test('improves a prompt with a direction preset', { timeout: 10_000 }, async () 
 
 async function createFirstmateFixture(directory: string): Promise<{
   environment: NodeJS.ProcessEnv
+  olderSessionPath: string
   sessionPath: string
   workspace: string
 }> {
@@ -959,6 +1030,7 @@ async function createFirstmateFixture(directory: string): Promise<{
   ])
   return {
     workspace,
+    olderSessionPath,
     sessionPath,
     environment: {
       PI_LIVECRAFT_FIRSTMATE_WORKSPACE: workspace,

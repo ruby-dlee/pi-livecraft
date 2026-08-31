@@ -381,7 +381,7 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
       || /[\r\n]/.test(body.name)
     ) throw new HttpError(400, 'Session name must contain between 1 and 120 characters')
     const cwd = await resolveWorkingDirectory(body.cwd)
-    const session = await loadWorkspacePiSession(body.sessionPath, cwd)
+    const { session } = await loadWorkspacePiSession(body.sessionPath, cwd)
     if (session.cwd !== cwd)
       throw new HttpError(400, 'Pi session does not belong to this working directory')
     await manager.request({
@@ -398,18 +398,26 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     const body = await readJsonBody(request)
     const cwd = await resolveWorkingDirectory(typeof body.cwd === 'string' ? body.cwd : '~/.pi')
     if (typeof body.sessionPath === 'string') {
-      const session = await loadWorkspacePiSession(body.sessionPath, cwd)
+      const { session, preset } = await loadWorkspacePiSession(body.sessionPath, cwd)
       if (session.cwd !== cwd)
         throw new HttpError(400, 'Pi session does not belong to this working directory')
       sendJson(
         response,
         201,
-        await manager.request({
-          action: 'open',
-          cwd,
-          name: session.name,
-          sessionPath: session.sessionPath,
-        }),
+        await manager.request(
+          preset
+            ? {
+              action: 'open_preset',
+              preset: preset.id,
+              sessionPath: session.sessionPath,
+            }
+            : {
+              action: 'open',
+              cwd,
+              name: session.name,
+              sessionPath: session.sessionPath,
+            },
+        ),
       )
       return
     }
@@ -557,14 +565,22 @@ async function firstmatePresetForWorkspace(cwd: string): Promise<FirstmatePreset
   }
 }
 
-/** Loads sessions from either standard Pi storage or the trusted Firstmate preset storage. */
-async function loadWorkspacePiSession(sessionPath: string, cwd: string): Promise<RecentSession> {
+interface LoadedWorkspacePiSession {
+  session: RecentSession
+  preset?: FirstmatePreset
+}
+
+/** Loads sessions from standard Pi storage or labels a trusted Firstmate preset session. */
+async function loadWorkspacePiSession(
+  sessionPath: string,
+  cwd: string,
+): Promise<LoadedWorkspacePiSession> {
   try {
-    return await loadPiSession(sessionPath)
+    return { session: await loadPiSession(sessionPath) }
   } catch (standardDirectoryError) {
     const preset = await firstmatePresetForWorkspace(cwd)
     if (!preset) throw standardDirectoryError
-    return loadPiSession(sessionPath, preset.sessionDirectory)
+    return { session: await loadPiSession(sessionPath, preset.sessionDirectory), preset }
   }
 }
 

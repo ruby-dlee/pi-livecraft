@@ -120,6 +120,7 @@ export interface ManagerRequest {
     | 'list'
     | 'create'
     | 'open'
+    | 'open_preset'
     | 'close'
     | 'rename'
     | 'command'

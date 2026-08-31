@@ -16,7 +16,7 @@ import {
   firstmatePreset,
   validateFirstmatePreset,
 } from './firstmate-preset.ts'
-import { listRecentPiSessions } from './pi-session-store.ts'
+import { listRecentPiSessions, loadPiSession } from './pi-session-store.ts'
 import {
   generateProjectMap,
   improvementDirectionInstruction,
@@ -125,7 +125,8 @@ async function handleRequest(socket: Socket, value: unknown): Promise<void> {
   }
 
   const tracksActivity = value.action === 'create' || value.action === 'open'
-    || value.action === 'close' || value.action === 'rename' || value.action === 'command'
+    || value.action === 'open_preset' || value.action === 'close'
+    || value.action === 'rename' || value.action === 'command'
     || value.action === 'improve_prompt' || value.action === 'run_prompt'
     || value.action === 'launch_preset'
   if (tracksActivity) activeRequests += 1
@@ -153,6 +154,10 @@ async function handleRequest(socket: Socket, value: unknown): Promise<void> {
     } else if (value.action === 'launch_preset') {
       if (value.preset !== FIRSTMATE_PRESET_ID) throw new Error('Unknown launch preset')
       data = await launchFirstmate()
+    } else if (value.action === 'open_preset') {
+      if (value.preset !== FIRSTMATE_PRESET_ID) throw new Error('Unknown launch preset')
+      if (typeof value.sessionPath !== 'string') throw new Error('Preset session path is required')
+      data = await launchFirstmate(value.sessionPath)
     } else if (value.action === 'create') data = await createSession(value)
     else if (value.action === 'open') data = await openSession(value)
     else if (value.action === 'close') data = await closeSession(value)
@@ -217,7 +222,7 @@ function hasBeenIdleLongEnough(session: ManagedSession): boolean {
 }
 
 /** Opens or safely resumes the one manager-owned primary Firstmate process. */
-async function launchFirstmate(): Promise<SessionSummary> {
+async function launchFirstmate(sessionPath?: string): Promise<SessionSummary> {
   const existing = [...sessions.values()].find((session) =>
     session.presetId === FIRSTMATE_PRESET_ID && session.summary.status !== 'exited'
   )
@@ -228,7 +233,11 @@ async function launchFirstmate(): Promise<SessionSummary> {
     const preset = firstmatePreset()
     await validateFirstmatePreset(preset)
     const workspace = await realpath(preset.workspace)
-    const recent = (await listRecentPiSessions(workspace, preset.sessionDirectory))[0]
+    const recent = sessionPath
+      ? await loadPiSession(sessionPath, preset.sessionDirectory)
+      : (await listRecentPiSessions(workspace, preset.sessionDirectory))[0]
+    if (recent && recent.cwd !== workspace)
+      throw new Error('Firstmate session does not belong to the configured workspace')
     if (recent) {
       const managedOwner = [...sessions.values()].find((session) =>
         session.summary.sessionPath === recent.sessionPath && session.summary.status !== 'exited'
@@ -711,7 +720,8 @@ function respond(socket: Socket, response: ManagerResponse): void {
 function isManagerRequest(value: unknown): value is ManagerRequest {
   if (!isObject(value) || typeof value.id !== 'string') return false
   return value.action === 'list' || value.action === 'create' || value.action === 'open'
-    || value.action === 'close' || value.action === 'rename' || value.action === 'command'
+    || value.action === 'open_preset' || value.action === 'close'
+    || value.action === 'rename' || value.action === 'command'
     || value.action === 'improve_prompt' || value.action === 'run_prompt'
     || value.action === 'launch_preset' || value.action === 'status'
     || value.action === 'restart'

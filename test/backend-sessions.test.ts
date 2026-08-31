@@ -15,6 +15,7 @@ const host = '127.0.0.1'
 interface BackendFixture {
   baseUrl: string
   close: () => Promise<void>
+  genericSessionPath: string
   managerRequests: Array<Record<string, unknown>>
   sessionPath: string
   workspace: string
@@ -43,13 +44,34 @@ test('Firstmate preset sessions remain usable through a symlinked workspace over
 
     assert.equal(response.status, 201)
     assert.deepEqual(await response.json(), { sessionId: 'opened-firstmate' })
+    const request = fixture.managerRequests.find(({ action }) => action === 'open_preset')
+    assert.deepEqual(request, {
+      action: 'open_preset',
+      id: request?.id,
+      preset: 'firstmate',
+      sessionPath: fixture.sessionPath,
+    })
+  })
+
+  await t.test('keeps a standard-profile session on the generic open path', async () => {
+    const response = await fetch(`${fixture.baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cwd: fixture.workspace,
+        sessionPath: fixture.genericSessionPath,
+      }),
+    })
+
+    assert.equal(response.status, 201)
+    assert.deepEqual(await response.json(), { sessionId: 'opened-generic' })
     const request = fixture.managerRequests.find(({ action }) => action === 'open')
     assert.deepEqual(request, {
       action: 'open',
       cwd: fixture.workspace,
       id: request?.id,
-      name: 'Firstmate session',
-      sessionPath: fixture.sessionPath,
+      name: 'Generic session',
+      sessionPath: fixture.genericSessionPath,
     })
   })
 
@@ -84,9 +106,10 @@ async function createBackendFixture(): Promise<BackendFixture> {
   const standardAgentDirectory = join(root, 'standard-agent')
   const firstmateAgentDirectory = join(root, 'firstmate-agent')
   const firstmateSessionDirectory = join(firstmateAgentDirectory, 'sessions', 'workspace')
+  const standardSessionDirectory = join(standardAgentDirectory, 'sessions', 'workspace')
   await Promise.all([
     mkdir(workspacePath),
-    mkdir(join(standardAgentDirectory, 'sessions'), { recursive: true }),
+    mkdir(standardSessionDirectory, { recursive: true }),
     mkdir(firstmateSessionDirectory, { recursive: true }),
   ])
   await symlink(workspacePath, workspaceOverride, process.platform === 'win32' ? 'junction' : 'dir')
@@ -94,25 +117,11 @@ async function createBackendFixture(): Promise<BackendFixture> {
   assert.notEqual(workspaceOverride, workspace)
   assert.equal(await realpath(workspaceOverride), workspace)
   const sessionPath = join(firstmateSessionDirectory, 'firstmate.jsonl')
-  await writeFile(
-    sessionPath,
-    [
-      JSON.stringify({
-        type: 'session',
-        version: 3,
-        id: 'firstmate-session',
-        timestamp: '2026-07-19T10:00:00.000Z',
-        cwd: workspace,
-      }),
-      JSON.stringify({ type: 'session_info', name: 'Firstmate session' }),
-      JSON.stringify({
-        type: 'message',
-        timestamp: '2026-07-19T10:00:00.000Z',
-        message: { role: 'user', content: 'Firstmate session' },
-      }),
-    ]
-      .join('\n'),
-  )
+  const genericSessionPath = join(standardSessionDirectory, 'generic.jsonl')
+  await Promise.all([
+    writeSession(sessionPath, workspace, 'firstmate-session', 'Firstmate session'),
+    writeSession(genericSessionPath, workspace, 'generic-session', 'Generic session'),
+  ])
 
   const managerRequests: Array<Record<string, unknown>> = []
   const managerServer = createServer((socket) => {
@@ -127,8 +136,10 @@ async function createBackendFixture(): Promise<BackendFixture> {
           runtimeRevision: null,
           supervised: false,
         }
-        : value.action === 'open'
+        : value.action === 'open_preset'
         ? { sessionId: 'opened-firstmate' }
+        : value.action === 'open'
+        ? { sessionId: 'opened-generic' }
         : {}
       socket.write(encodeJsonLine({ kind: 'response', id: value.id, ok: true, data }))
     })
@@ -165,6 +176,7 @@ async function createBackendFixture(): Promise<BackendFixture> {
 
   return {
     baseUrl,
+    genericSessionPath: await realpath(genericSessionPath),
     managerRequests,
     sessionPath: await realpath(sessionPath),
     workspace,
@@ -174,6 +186,33 @@ async function createBackendFixture(): Promise<BackendFixture> {
       await rm(root, { recursive: true, force: true })
     },
   }
+}
+
+async function writeSession(
+  path: string,
+  workspace: string,
+  id: string,
+  name: string,
+): Promise<void> {
+  await writeFile(
+    path,
+    [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id,
+        timestamp: '2026-07-19T10:00:00.000Z',
+        cwd: workspace,
+      }),
+      JSON.stringify({ type: 'session_info', name }),
+      JSON.stringify({
+        type: 'message',
+        timestamp: '2026-07-19T10:00:00.000Z',
+        message: { role: 'user', content: name },
+      }),
+    ]
+      .join('\n'),
+  )
 }
 
 async function listen(server: Server): Promise<void> {
